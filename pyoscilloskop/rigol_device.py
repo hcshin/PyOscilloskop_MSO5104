@@ -28,12 +28,16 @@ class RigolDevice(object):
        or a DG1022 function generator."""
 
     def __init__(self, device):
+        # class constants
+        self.SLEEP_AFTER_WRITE = 0.01 # ← needed to give the device some time to commit changes
+
         """ device needs to be a universal_usbtmc.Instrument """
         self.dev = device
 
     def write(self, *args, **kwargs):
         """Send a command directly to the device"""
         self.dev.write(*args, **kwargs)
+        time.sleep(self.SLEEP_AFTER_WRITE)
  
     def read(self, *args, **kwargs):
         """Read text data from the device"""

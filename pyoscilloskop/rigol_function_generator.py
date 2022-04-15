@@ -19,6 +19,7 @@
 
 import time
 import re
+import sys
 from math import sin
 
 from .rigol_device import RigolDevice, RigolError, RigolUsageError, RigolTimeoutError
@@ -29,9 +30,6 @@ from .rigol_device import RigolDevice, RigolError, RigolUsageError, RigolTimeout
 
 class RigolFunctionGenerator(RigolDevice):
     ### device dependent constatants:
-    SLEEP_AFTER_WRITE = 0.01 # ← needed to give the device some time to commit changes
-    SLEEP_MS_PER_CHAR = 0.2 # ← needed for long commands such as DATA:DAC VOLATILE,...
-    FUNCTIONS = {"SIN": "SINusoid", "SQU": "SQUare", "RAMP": "RAMP", "PULS": "PULSe", "NOIS": "NOISe", "DC": "DC", "USER": "USER"}
     DAC_MIN = 0
     DAC_MAX = 2**14-1 # 14 bit precision: 0-16383
     MAX_DAC_VALUES = 2**12
@@ -40,10 +38,10 @@ class RigolFunctionGenerator(RigolDevice):
     ## valid responses for commands sent to the function generator:
     VALID_RESPONSES = {
       '*IDN?': {
-        'full': r'(?P<manufacturer>[a-zA-Z0-9 ]+),(?P<model>[a-zA-Z0-9 ]+),(?P<serial>[A-Z0-9]+),(),(?P<edition>[0-9\.]+)',
+        'full': r'(?P<manufacturer>[a-zA-Z0-9 ]+),(?P<model>[a-zA-Z0-9 ]+),(?P<serial>[A-Z0-9]+),(?P<edition>[0-9\.]+)',
         'groups' : {
           'manufacturer' : 'RIGOL TECHNOLOGIES',
-          'model' : 'DG1022 '
+          'model' : ['DG1022 ', 'MSO5104 '] # Add models here (but only tested MSO5104)
         }
       },
       'SYSTem:ERRor?': {
@@ -58,28 +56,6 @@ class RigolFunctionGenerator(RigolDevice):
         # check identification
         info = RigolFunctionGenerator.validate('*IDN?', self.dev.idn)
         print("Discovered a %s from %s." % (info["model"], info["manufacturer"]))
-        self.lock()
-
-    def __del__(self):
-        try:
-            if self.debug_level > 0:
-                ## Get errors from the device and print them before quitting the program.
-                errors = self.clear_errors()
-                if errors:
-                    print('The DG1022 reported problems:')
-                    for error in errors: print('"%s" (error number %d)' % (error[1], error[0]))
-            self.unlock()
-        except:
-            pass
-
-    def lock(self):
-        ## Lock the front panel knobs and illuminate "Local" knob (manual p. 2-65)
-        #self.write("SYSTem:RWLock") # ← also lock the "Local" knob
-        self.write("SYSTem:REMote") # ← don't lock the "Local" knob
-
-    def unlock(self):
-        ## reactivate the front panel knobs (manual p. 2-65)
-        self.write("SYSTem:LOCal")
 
     def clear_error(self):
         """ Fetches error messages from the device and clears them from the queue.
@@ -129,8 +105,16 @@ class RigolFunctionGenerator(RigolDevice):
         self.write("SYSTem:CLKSRC " + ("INT" if internal else "EXT") )
 
     def activate(self, channel=1):
-        channel = self.validate_channel_number(channel)
-        self.write("OUTP%s ON" % channel)
+        if channel not in (1, 2): 
+            sys.stderr.write(f"channel must be either 1 or 2 but {channel} given. setting it to 1")
+            channel=1
+        self.write(f"source{channel}:output 1")
+
+    def deactivate(self, channel: int = 1):
+        if channel not in (1, 2): 
+            sys.stderr.write(f"channel must be either 1 or 2 but {channel} given. setting it to 1")
+            channel=1
+        self.write(f"source{channel}:output 0")
 
     def arbitrary(self, sequence, frequency, channel=1, voltage_high=4, voltage_low=-4):
         if len(sequence) > self.MAX_DAC_VALUES:
@@ -157,14 +141,34 @@ class RigolFunctionGenerator(RigolDevice):
         self.write("FUNC:USER VOLATILE")
         self.activate(channel)
 
-    def sine(self, frequency, channel=1, voltage=1, offset=0, phase=0):
-        self.write("FUNC SIN")
-        self.write("FREQ %d" % frequency)
-        self.write("VOLT:UNIT VPP")
-        self.write("VOLT %.3f" % voltage)
-        self.write("VOLT:OFFS %.3f" % offset)
-        self.write("PHAS %d" % phase)
-        self.activate(channel)
+    def sine(self, 
+            frequency: float, 
+            channel: int = 1, 
+            amplitude: float = 0.1, 
+            offset: float = 0, 
+            phase: float = 0,
+            impedance: int = -1):
+        # value checking
+        VOL_MAX_50 = 2.5
+        AMP_MIN_50 = 10e-3
+        assert impedance in (50, -1), "output impedance has to either 50Ohm or High Z (-1)"
+        assert frequency <= 25e6 and frequency >= 100e-3, "frequency must meet 100e-3 <= frequency <= 25e6"
+        assert channel in (1, 2), "channel must be either 1 or 2"
+        if impedance == 50:
+            assert amplitude >= AMP_MIN_50, f"amplitude must be larger than or equal to {AMP_MIN_50}"
+            assert amplitude + offset < VOL_MAX_50, f"amplitude + offset should not exceed {VOL_MAX_50}"
+        else:
+            assert amplitude >= 2*AMP_MIN_50, f"amplitude must be larger than or equal to {2*AMP_MIN_50}"
+            assert amplitude + offset < 2*VOL_MAX_50, f"amplitude + offset should not exceed {2*VOL_MAX_50}"
+        assert offset >= 0, "offset must be zero or positive"
+        assert phase <= 360 and phase >= 0, "phase must meet 0 <= phase <= 360"
+
+        self.deactivate(channel)
+        self.write(f"source{channel}:function sinusoid")
+        self.write(f"source{channel}:frequency {frequency}")
+        self.write(f"source{channel}:voltage {amplitude}")
+        self.write(f"source{channel}:voltage:offset {offset}")
+        self.write(f"source{channel}:phase {phase}")
 
     @staticmethod
     def validate(request, response):
@@ -174,15 +178,17 @@ class RigolFunctionGenerator(RigolDevice):
         if not 'groups' in RigolFunctionGenerator.VALID_RESPONSES[request].keys(): return m.groupdict()
         for group in RigolFunctionGenerator.VALID_RESPONSES[request]['groups'].keys():
             matched_string = m.groupdict()[group]
-            g = re.match( RigolFunctionGenerator.VALID_RESPONSES[request]['groups'][group], matched_string )
-            if not g:
+            groupElem = RigolFunctionGenerator.VALID_RESPONSES[request]['groups'][group]
+            matchSuccess = False
+            if isinstance(groupElem, list):
+                for groupSubElem in groupElem:
+                    if re.match(groupSubElem.strip(), matched_string.strip()): matchSuccess = True
+            else:
+                if re.match(groupElem.strip(), matched_string.strip()): matchSuccess = True
+
+            if not matchSuccess:
                 raise RigolError('This software does not yet support products with %s as %s name so far.' % (matched_string, group) )
         return m.groupdict()
-
-    def validateChannelNumber(self, channel):
-        if channel not in [1,2]:
-            raise RigolUsageError("Only channels 1 and 2 are valid")
-        return ":CH2" if channel == 2 else ""
 
     @staticmethod
     def rescale(seq, low, high):
@@ -219,5 +225,3 @@ class RigolFunctionGenerator(RigolDevice):
         ## calculate sin(x)/x
         sequence = [sin(x)/x for x in sequence]
         return sequence
-
-

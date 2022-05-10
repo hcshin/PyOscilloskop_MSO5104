@@ -41,7 +41,7 @@ class RigolFunctionGenerator(RigolDevice):
         'full': r'(?P<manufacturer>[a-zA-Z0-9 ]+),(?P<model>[a-zA-Z0-9 ]+),(?P<serial>[A-Z0-9]+),(?P<edition>[0-9\.]+)',
         'groups' : {
           'manufacturer' : 'RIGOL TECHNOLOGIES',
-          'model' : ['DG1022 ', 'MSO5104 '] # Add models here (but only tested MSO5104)
+          'model' : ['MSO5104'] # Add models here to work with multiple models (but only tested on MSO5104, and the instructions might differ)
         }
       },
       'SYSTem:ERRor?': {
@@ -105,41 +105,16 @@ class RigolFunctionGenerator(RigolDevice):
         self.write("SYSTem:CLKSRC " + ("INT" if internal else "EXT") )
 
     def activate(self, channel=1):
-        if channel not in (1, 2): 
-            sys.stderr.write(f"channel must be either 1 or 2 but {channel} given. setting it to 1")
-            channel=1
+        assert channel in (1, 2), f"channel must be either 1 or 2"
         self.write(f"source{channel}:output 1")
 
     def deactivate(self, channel: int = 1):
-        if channel not in (1, 2): 
-            sys.stderr.write(f"channel must be either 1 or 2 but {channel} given. setting it to 1")
-            channel=1
+        assert channel in (1, 2), f"channel must be either 1 or 2"
         self.write(f"source{channel}:output 0")
 
-    def arbitrary(self, sequence, frequency, channel=1, voltage_high=4, voltage_low=-4):
-        if len(sequence) > self.MAX_DAC_VALUES:
-            raise RigolUsageError("Only %d samples possible on the DG1022. Tried %d." %
-              (self.MAX_DAC_VALUES, len(sequence) ) )
-        sequence = RigolFunctionGenerator.rescale(sequence, self.DAC_MIN, self.DAC_MAX)
-        if min([type(item) is int for item in sequence]) == False:
-            raise RigolUsageError('The sequence must contain integers only.')
-        if min(sequence) < self.DAC_MIN or max(sequence) > self.DAC_MAX:
-            raise RigolUsageError('The sequence must contain integers between 0 and 16383.')
-        self.write("OUTP OFF")
-        self.write("FUNC USER")
-        self.write("FREQ %d" % frequency)
-        self.write("VOLT:UNIT VPP")
-        #self.write("VOLT %.3f" % voltage)
-        #self.write("VOLT:OFFS %.3f" % offset)
-        self.write("VOLT:HIGH %.1f" % voltage_high)
-        self.write("VOLTage:LOW %.1f" % voltage_low)
-        self.write("DATA:DELete VOLATILE")
-        #MAX = self.MAX_DAC_VALUES_AT_ONCE
-        #for i in range(0, len(sequence)/MAX + ( 1 if len(sequence) % MAX > 0 else 0)):
-        #    self.write("DATA:DAC VOLATILE,%s" % ",".join([str(item) for item in sequence[i * MAX : i*MAX+MAX]]))
-        self.write("DATA:DAC VOLATILE,%s" % ",".join([str(item) for item in sequence]))
-        self.write("FUNC:USER VOLATILE")
-        self.activate(channel)
+    def deactivate_all(self):
+        deactivate(1)
+        deactivate(2)
 
     def sine(self, 
             frequency: float, 
@@ -169,6 +144,8 @@ class RigolFunctionGenerator(RigolDevice):
         self.write(f"source{channel}:voltage {amplitude}")
         self.write(f"source{channel}:voltage:offset {offset}")
         self.write(f"source{channel}:phase {phase}")
+        imp_str = "fifty" if impedance == 50 else "omeg"
+        self.write(f"source{channel}:output:impedance {imp_str}")
 
     @staticmethod
     def validate(request, response):

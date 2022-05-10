@@ -5,7 +5,7 @@ import time
 from pyoscilloskop import RigolFunctionGenerator
 from universal_usbtmc.backends.linux_kernel import Instrument
 
-dev_name = '/dev/usbtmc0'
+dev_name = '/dev/usbtmc1'
 device = Instrument(dev_name)
 
 fg = RigolFunctionGenerator(device)
@@ -16,14 +16,9 @@ for freq in range(1000, 2000, 5):
     # it alone does not turn on the generator
     fg.sine(frequency=freq,
             channel=1,
-            amplitude=0.5,
+            amplitude=1,
             offset=0,
-            phase=90)
+            phase=0)
     fg.activate(channel=1) # this will turn on the generator
     time.sleep(1.0)
 fg.deactivate(channel=1) # this will turn off the generator
-
-## Generate an arbitrary function: a sinc function with 4000 samples
-#fg.arbitrary(RigolFunctionGenerator.getSinc(2**12), 100000)
-## Generate an arbitrary function: a sin function with 4000 samples
-#fg.arbitrary(RigolFunctionGenerator.getSin(2**12), 100000)
